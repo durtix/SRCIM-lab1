@@ -23,6 +23,7 @@ public class ProductAgent extends Agent {
     String currentLocation = "Source";
     int currentSkillIndex  = 0;
 
+    AID    previousResourceAID    = null;
     AID    chosenResourceAID      = null;
     String chosenResourceLocation = null;
 
@@ -59,6 +60,13 @@ public class ProductAgent extends Agent {
             addBehaviour(new NegotiateBehaviour(this, cfp));
         } else {
             System.out.println("[" + id + "] Plano concluído com sucesso em: " + currentLocation);
+            if (chosenResourceAID != null) {
+                ACLMessage releaseMsg = new ACLMessage(ACLMessage.INFORM);
+                releaseMsg.addReceiver(chosenResourceAID);
+                releaseMsg.setContent("RELEASE");
+                send(releaseMsg);
+            }
+
             doDelete();
         }
     }
@@ -114,8 +122,20 @@ public class ProductAgent extends Agent {
                 ACLMessage accept = bestPropose.createReply();
                 accept.setPerformative(ACLMessage.ACCEPT_PROPOSAL);
                 acceptances.add(accept);
+
+                previousResourceAID = chosenResourceAID;
+
                 chosenResourceAID = bestPropose.getSender();
                 System.out.println("[" + id + "] Escolhi: " + chosenResourceAID.getLocalName());
+            }else {
+                // ---> NOVO CÓDIGO: Se ninguém aceitar, espera 2 segundos e tenta de novo
+                System.out.println("[" + id + "] Todas as máquinas ocupadas. A aguardar...");
+                myAgent.addBehaviour(new jade.core.behaviours.WakerBehaviour(myAgent, 5000) {
+                    @Override
+                    protected void onWake() {
+                        startProduction(); // Tenta a mesma skill outra vez
+                    }
+                });
             }
 
             // Envia REJECT a todos os outros
@@ -239,6 +259,14 @@ public class ProductAgent extends Agent {
                     );
                     ACLMessage inform = receive(mt);
                     if (inform != null) {
+                        if (previousResourceAID != null) {
+                            ACLMessage releaseMsg = new ACLMessage(ACLMessage.INFORM);
+                            releaseMsg.addReceiver(previousResourceAID);
+                            releaseMsg.setContent("RELEASE");
+                            send(releaseMsg);
+                            previousResourceAID = null; // Limpa a memória
+                        }
+
                         currentLocation = chosenResourceLocation;
                         System.out.println("[" + id + "] Movido para: " + currentLocation);
                         finished = true;

@@ -76,7 +76,7 @@ public class TransportAgent extends Agent {
 
                 // Executa o movimento (bloqueante — pode demorar)
                 // A interface ITransport requer 3 argumentos: origin, dest, productID
-                boolean success = myLib.executeMove(origin, dest);
+                boolean success = myLib.executeMove(origin, dest, productID);
 
                 // Envia INFORM (ou FAILURE) quando o movimento termina
                 ACLMessage reply = msg.createReply();

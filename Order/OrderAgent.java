@@ -28,14 +28,17 @@ public class OrderAgent extends Agent {
         try {
             for (int i = 0; i < productA; i++) {
                 launchProduct("A");
+                Thread.sleep(15000);
             }
             for (int i = 0; i < productB; i++) {
                 launchProduct("B");
+                Thread.sleep(15000);
             }
             for (int i = 0; i < productC; i++) {
                 launchProduct("C");
+                Thread.sleep(15000);
             }
-        } catch (StaleProxyException e) {
+        } catch (StaleProxyException | InterruptedException e) {
             System.out.println("[ERRO] Falha ao criar agentes de produto.");
             e.printStackTrace();
         }

@@ -16,6 +16,7 @@ import java.util.Random;
 public class ResourceAgent extends Agent {
 
     private boolean isBusy = false; // Estado do recurso
+    private jade.core.AID currentProduct = null;
     String id;
     IResource myLib;
     String description;
@@ -46,6 +47,21 @@ public class ResourceAgent extends Agent {
 
         // Adiciona o responder para o protocolo Contract Net
         addBehaviour(new ResourceResponder(this, MessageTemplate.MatchProtocol(jade.domain.FIPANames.InteractionProtocol.FIPA_CONTRACT_NET)));
+
+        addBehaviour(new jade.core.behaviours.CyclicBehaviour(this) {
+            @Override
+            public void action() {
+                jade.lang.acl.MessageTemplate mt = jade.lang.acl.MessageTemplate.MatchContent("RELEASE");
+                jade.lang.acl.ACLMessage msg = receive(mt);
+                if (msg != null) {
+                    isBusy = false;
+                    currentProduct = null;// A mesa destranca fisicamente
+                    System.out.println("[" + getLocalName() + "] Peça recolhida. Mesa livre!");
+                } else {
+                    block();
+                }
+            }
+        });
     }
 
     private void registerInDF() {
@@ -65,6 +81,8 @@ public class ResourceAgent extends Agent {
     }
 
     private class ResourceResponder extends ContractNetResponder {
+        private boolean isReserved = false; // Nova variável de tranca rápida
+
         public ResourceResponder(Agent a, MessageTemplate mt) {
             super(a, mt);
         }
@@ -73,35 +91,39 @@ public class ResourceAgent extends Agent {
         protected ACLMessage handleCfp(ACLMessage cfp) {
             ACLMessage reply = cfp.createReply();
 
-            if (isBusy) {
-                // Se estiver a trabalhar, recusa para o produto tentar outro agente (ex: GS1 -> GS2)
+            boolean lockedByOther = isBusy && (currentProduct == null || !currentProduct.equals(cfp.getSender()));
+            // Rejeita se estiver a trabalhar OU se já tiver prometido a outro
+            if (lockedByOther || isReserved) {
                 reply.setPerformative(ACLMessage.REFUSE);
-                System.out.println("[" + id + "] Ocupado! Recusei pedido de " + cfp.getSender().getLocalName());
             } else {
-                // Se estiver livre, envia proposta
+                isReserved = true; // Tranca imediatamente mal faz a proposta!
                 reply.setPerformative(ACLMessage.PROPOSE);
-                // Métrica aleatória para o produto escolher o "melhor"
                 reply.setContent(String.valueOf(new Random().nextDouble()));
             }
             return reply;
         }
 
         @Override
+        protected void handleRejectProposal(ACLMessage cfp, ACLMessage propose, ACLMessage reject) {
+            // Se o produto não aceitar esta máquina, destranca a reserva
+            isReserved = false;
+        }
+
+        @Override
         protected ACLMessage handleAcceptProposal(ACLMessage cfp, ACLMessage propose, ACLMessage accept) {
-            // BLOQUEIA o recurso
-            isBusy = true;
+            isBusy = true;      // Passa a estar oficialmente ocupada
+            isReserved = false;
+            currentProduct = cfp.getSender();
 
             System.out.println("[" + id + "] A executar skill: " + cfp.getContent() + " para " + cfp.getSender().getLocalName());
 
-            // Execução física (síncrona na biblioteca)
             myLib.executeSkill(cfp.getContent());
 
             ACLMessage inform = accept.createReply();
             inform.setPerformative(ACLMessage.INFORM);
             inform.setContent(location);
 
-            // LIBERTA o recurso após terminar
-            isBusy = false;
+            // Continua sem o isBusy = false aqui! Só liberta com o RELEASE.
             return inform;
         }
     }
