@@ -22,23 +22,32 @@ public class SimResourceLibrary implements IResource {
     public int clientID = -1;
     Agent myAgent;
     final long timeout = 30000;
-    
+
     @Override
     public void init(Agent a) {
         this.myAgent = a;
-        if(sim == null) sim = new remoteApi();
         sim = new remoteApi();
+
         int port = 0;
-        switch(myAgent.getLocalName()){
-            case "GlueStation1": port=19997; break;
-            case "GlueStation2": port=19998; break;
-            case "QualityControlStation1": port=19999; break;
-            case "QualityControlStation2": port=20000; break;
-            case "Operator": port=20001; break;
+        switch (myAgent.getLocalName()) {
+            case "GlueStation1":          port = 19997; break;
+            case "GlueStation2":          port = 19998; break;
+            case "QualityControlStation1": port = 19999; break;
+            case "QualityControlStation2": port = 20000; break;
+            case "Operator":              port = 20001; break;
+            default:
+                System.err.println("[SIM] Agente desconhecido: " + myAgent.getLocalName());
+                return;
         }
-        clientID = sim.simxStart("127.0.0.1", port, true, true, 5000, 5);        
+
+        clientID = sim.simxStart("127.0.0.1", port, true, true, 5000, 5);
+
         if (clientID != -1) {
-            System.out.println(this.myAgent.getAID().getLocalName() + " initialized communication with the simulation.");            
+            System.out.println("[SIM] " + myAgent.getLocalName()
+                    + " conectado na porta " + port);
+        } else {
+            System.err.println("[SIM] FALHA ao conectar " + myAgent.getLocalName()
+                    + " na porta " + port + ". Verifica se o CoppeliaSim está em PLAY.");
         }
     }
 
