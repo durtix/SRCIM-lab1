@@ -74,17 +74,19 @@ public class TransportAgent extends Agent {
                 agree.setPerformative(ACLMessage.AGREE);
                 send(agree);
 
-                // Executa o movimento (bloqueante — pode demorar)
-                // A interface ITransport requer 3 argumentos: origin, dest, productID
-                boolean success = myLib.executeMove(origin, dest, productID);
 
-                // Envia INFORM (ou FAILURE) quando o movimento termina
-                ACLMessage reply = msg.createReply();
-                reply.setPerformative(success ? ACLMessage.INFORM : ACLMessage.FAILURE);
-                reply.setContent(dest);
-                send(reply);
+                new Thread(() -> {
+                    boolean success = myLib.executeMove(origin, dest, productID);
 
-                System.out.println("[" + id + "] Transporte concluído: " + origin + " → " + dest);
+                    ACLMessage reply = msg.createReply();
+                    reply.setPerformative(success ? ACLMessage.INFORM : ACLMessage.FAILURE);
+                    reply.setContent(dest);
+                    send(reply);
+
+                    System.out.println("[" + id + "] Transporte concluído: " + origin + " → " + dest);
+                }).start();
+
+
 
             } else {
                 block();

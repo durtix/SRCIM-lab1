@@ -16,6 +16,7 @@ import java.util.Random;
 public class ResourceAgent extends Agent {
 
     private boolean isBusy = false; // Estado do recurso
+    private int vagas = 2;
     private jade.core.AID currentProduct = null;
     String id;
     IResource myLib;
@@ -51,12 +52,60 @@ public class ResourceAgent extends Agent {
         addBehaviour(new jade.core.behaviours.CyclicBehaviour(this) {
             @Override
             public void action() {
-                jade.lang.acl.MessageTemplate mt = jade.lang.acl.MessageTemplate.MatchContent("RELEASE");
+                jade.lang.acl.MessageTemplate mtRelease = jade.lang.acl.MessageTemplate.MatchContent("RELEASE");
+                jade.lang.acl.MessageTemplate mtExec = jade.lang.acl.MessageTemplate.MatchOntology(Utilities.Constants.ONTOLOGY_EXECUTE_SKILL);
+                jade.lang.acl.MessageTemplate mt = jade.lang.acl.MessageTemplate.or(mtRelease, mtExec);
+
                 jade.lang.acl.ACLMessage msg = receive(mt);
                 if (msg != null) {
-                    isBusy = false;
-                    currentProduct = null;// A mesa destranca fisicamente
-                    System.out.println("[" + getLocalName() + "] Peça recolhida. Mesa livre!");
+                    if (msg.getContent().equals("RELEASE")) {
+                        vagas++;
+                        isBusy = false;
+                        currentProduct = null;
+                    } else if (msg.getPerformative() == jade.lang.acl.ACLMessage.REQUEST) {
+                        isBusy = true;
+                        System.out.println("[" + id + "] A preparar a mesa para a skill: " + msg.getContent());
+
+                        try {
+                            if (myLib instanceof Libraries.SimResourceLibrary) {
+                                Libraries.SimResourceLibrary lib = (Libraries.SimResourceLibrary) myLib;
+
+                                // 1. Força a escrita do sinal limpo
+                                lib.sim.simxSetStringSignal(lib.clientID, getLocalName(), new coppelia.CharWA(""), lib.sim.simx_opmode_blocking);
+                                lib.sim.simxSetIntegerSignal(lib.clientID, getLocalName(), 0, lib.sim.simx_opmode_blocking);
+
+                                // 2. A GARANTIA: Fica em loop até o CoppeliaSim confirmar que o sinal desceu mesmo para 0
+                                coppelia.IntW check = new coppelia.IntW(-1);
+                                long startCheck = System.currentTimeMillis();
+                                while (check.getValue() != 0 && (System.currentTimeMillis() - startCheck < 3000)) {
+                                    lib.sim.simxGetIntegerSignal(lib.clientID, getLocalName(), check, lib.sim.simx_opmode_blocking);
+                                    Thread.sleep(50);
+                                }
+                            }
+
+                            // 3. Dá 1.5s para a peça "cair" fisicamente e estabilizar no sensor da máquina
+                            Thread.sleep(1500);
+                        } catch (Exception e) {}
+
+                        // Agora é matematicamente impossível o Java saltar a skill!
+                        System.out.println("[" + id + "] antes de mandar exect!");
+                        myLib.executeSkill(msg.getContent());
+                        System.out.println("[" + id + "] Skill física concluída no simulador!");
+
+                        // 4. Limpeza no final para não deixar lixo para o próximo produto
+                        try {
+                            if (myLib instanceof Libraries.SimResourceLibrary) {
+                                Libraries.SimResourceLibrary lib = (Libraries.SimResourceLibrary) myLib;
+                                lib.sim.simxSetStringSignal(lib.clientID, getLocalName(), new coppelia.CharWA(""), lib.sim.simx_opmode_blocking);
+                                lib.sim.simxSetIntegerSignal(lib.clientID, getLocalName(), 0, lib.sim.simx_opmode_blocking);
+                            }
+                        } catch (Exception e) {}
+                        isBusy = false;
+
+                        jade.lang.acl.ACLMessage reply = msg.createReply();
+                        reply.setPerformative(jade.lang.acl.ACLMessage.INFORM);
+                        send(reply);
+                    }
                 } else {
                     block();
                 }
@@ -91,12 +140,11 @@ public class ResourceAgent extends Agent {
         protected ACLMessage handleCfp(ACLMessage cfp) {
             ACLMessage reply = cfp.createReply();
 
-            boolean lockedByOther = isBusy && (currentProduct == null || !currentProduct.equals(cfp.getSender()));
-            // Rejeita se estiver a trabalhar OU se já tiver prometido a outro
-            if (lockedByOther || isReserved) {
+            // Se o braço estiver a colar OU se não houver vagas (0), recusa!
+            if (isBusy || vagas <= 0) {
                 reply.setPerformative(ACLMessage.REFUSE);
             } else {
-                isReserved = true; // Tranca imediatamente mal faz a proposta!
+                vagas--; // RESERVA A VAGA IMEDIATAMENTE!
                 reply.setPerformative(ACLMessage.PROPOSE);
                 reply.setContent(String.valueOf(new Random().nextDouble()));
             }
@@ -105,26 +153,15 @@ public class ResourceAgent extends Agent {
 
         @Override
         protected void handleRejectProposal(ACLMessage cfp, ACLMessage propose, ACLMessage reject) {
-            // Se o produto não aceitar esta máquina, destranca a reserva
-            isReserved = false;
+            vagas++; // Se o produto escolheu outra máquina, devolvemos a vaga
         }
 
         @Override
         protected ACLMessage handleAcceptProposal(ACLMessage cfp, ACLMessage propose, ACLMessage accept) {
-            isBusy = true;      // Passa a estar oficialmente ocupada
-            isReserved = false;
-            currentProduct = cfp.getSender();
-
-            System.out.println("[" + id + "] A executar skill: " + cfp.getContent() + " para " + cfp.getSender().getLocalName());
-
-            myLib.executeSkill(cfp.getContent());
-
             ACLMessage inform = accept.createReply();
             inform.setPerformative(ACLMessage.INFORM);
             inform.setContent(location);
-
-            // Continua sem o isBusy = false aqui! Só liberta com o RELEASE.
-            return inform;
+            return inform; // Não mexe nas vagas aqui, já foram reservadas no Cfp
         }
     }
 }

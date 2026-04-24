@@ -25,23 +25,30 @@ public class OrderAgent extends Agent {
                 " ProductsB " + productB + " ProductsC " + productC);
 
         // AQUI: Ciclo para lançar os produtos conforme as quantidades da GUI
-        try {
-            for (int i = 0; i < productA; i++) {
-                launchProduct("A");
-                Thread.sleep(20000);
-            }
-            for (int i = 0; i < productB; i++) {
-                launchProduct("B");
-                Thread.sleep(20000);
-            }
-            for (int i = 0; i < productC; i++) {
-                launchProduct("C");
-                Thread.sleep(20000);
-            }
-        } catch (StaleProxyException | InterruptedException e) {
-            System.out.println("[ERRO] Falha ao criar agentes de produto.");
-            e.printStackTrace();
+        // Cria uma lista misturada (ex: A, B, C, A, B, C...)
+        java.util.ArrayList<String> orderList = new java.util.ArrayList<>();
+        int max = Math.max(productA, Math.max(productB, productC));
+        for (int i = 0; i < max; i++) {
+            if (i < productA) orderList.add("A");
+            if (i < productB) orderList.add("B");
+            if (i < productC) orderList.add("C");
         }
+
+// Lança os produtos a cada 20 segundos sem bloquear o JADE
+        addBehaviour(new jade.core.behaviours.TickerBehaviour(this, 20000) {
+            int index = 0;
+            @Override
+            protected void onTick() {
+                if (index < orderList.size()) {
+                    try {
+                        launchProduct(orderList.get(index));
+                    } catch (StaleProxyException e) { e.printStackTrace(); }
+                    index++;
+                } else {
+                    stop(); // Terminou a encomenda
+                }
+            }
+        });
     }
 
     @Override

@@ -60,6 +60,7 @@ public class ProductAgent extends Agent {
             addBehaviour(new NegotiateBehaviour(this, cfp));
         } else {
             System.out.println("[" + id + "] Plano concluído com sucesso em: " + currentLocation);
+
             if (chosenResourceAID != null) {
                 ACLMessage releaseMsg = new ACLMessage(ACLMessage.INFORM);
                 releaseMsg.addReceiver(chosenResourceAID);
@@ -130,7 +131,7 @@ public class ProductAgent extends Agent {
             }else {
                 // ---> NOVO CÓDIGO: Se ninguém aceitar, espera 2 segundos e tenta de novo
                 System.out.println("[" + id + "] Todas as máquinas ocupadas. A aguardar...");
-                myAgent.addBehaviour(new jade.core.behaviours.WakerBehaviour(myAgent, 5000) {
+                myAgent.addBehaviour(new jade.core.behaviours.WakerBehaviour(myAgent, 10000) {
                     @Override
                     protected void onWake() {
                         startProduction(); // Tenta a mesma skill outra vez
@@ -152,7 +153,7 @@ public class ProductAgent extends Agent {
         @Override
         protected void handleInform(ACLMessage inform) {
             chosenResourceLocation = inform.getContent();
-            System.out.println("[" + id + "] Skill executada. Destino era: " + chosenResourceLocation);
+            System.out.println("[" + id + "] Máquina reservada em: " + chosenResourceLocation);
             addBehaviour(new TransportBehaviour());
         }
 
@@ -185,14 +186,13 @@ public class ProductAgent extends Agent {
 
         @Override
         public void onStart() {
-            // Se já estamos no local certo, não precisamos de transporte
+            // Se já estamos no local certo, não há transporte a fazer
+            // (acontece no pick-up: produto começa em Source, Operator está em Source)
             if (currentLocation.equals(chosenResourceLocation)) {
-                System.out.println("[" + id + "] Já estou no local. A avançar...");
+                System.out.println("[" + id + "] Já estou em " + currentLocation + ". A avançar.");
                 finished = true;
-                currentSkillIndex++;
-                startProduction();
+                myAgent.addBehaviour(new ExecuteBehaviour());
             }
-            // Se precisamos de mover, arranca no passo 0
         }
 
         @Override
@@ -202,7 +202,6 @@ public class ProductAgent extends Agent {
             switch (step) {
 
                 case 0: {
-                    // Encontra o TA no DF e envia REQUEST
                     DFAgentDescription template = new DFAgentDescription();
                     ServiceDescription sd = new ServiceDescription();
                     sd.setType(Constants.DFSERVICE_TRANSPORT);
@@ -236,7 +235,6 @@ public class ProductAgent extends Agent {
                 }
 
                 case 1: {
-                    // Aguarda AGREE do TA — sem bloquear outros behaviours
                     MessageTemplate mt = MessageTemplate.and(
                             MessageTemplate.MatchPerformative(ACLMessage.AGREE),
                             MessageTemplate.MatchSender(taAID)
@@ -246,32 +244,34 @@ public class ProductAgent extends Agent {
                         System.out.println("[" + id + "] AGV em movimento...");
                         step = 2;
                     } else {
-                        block(); // cede o controlo até chegar uma mensagem
+                        block();
                     }
                     break;
                 }
 
                 case 2: {
-                    // Aguarda INFORM do TA — sem bloquear outros behaviours
                     MessageTemplate mt = MessageTemplate.and(
                             MessageTemplate.MatchPerformative(ACLMessage.INFORM),
                             MessageTemplate.MatchSender(taAID)
                     );
                     ACLMessage inform = receive(mt);
                     if (inform != null) {
-                        if (previousResourceAID != null) {
+                        currentLocation = chosenResourceLocation;
+                        System.out.println("[" + id + "] Movido para: " + currentLocation);
+
+                        if (previousResourceAID != null && !previousResourceAID.equals(chosenResourceAID)) {
                             ACLMessage releaseMsg = new ACLMessage(ACLMessage.INFORM);
                             releaseMsg.addReceiver(previousResourceAID);
                             releaseMsg.setContent("RELEASE");
                             send(releaseMsg);
-                            previousResourceAID = null; // Limpa a memória
                         }
 
-                        currentLocation = chosenResourceLocation;
-                        System.out.println("[" + id + "] Movido para: " + currentLocation);
+
+                        // Atualiza qual é a máquina atual onde o produto está
+                        previousResourceAID = chosenResourceAID;
+
                         finished = true;
-                        currentSkillIndex++;
-                        startProduction(); // Avança para a próxima skill
+                        myAgent.addBehaviour(new ExecuteBehaviour());
                     } else {
                         block();
                     }
@@ -296,5 +296,41 @@ public class ProductAgent extends Agent {
             case "C": return new ArrayList<>(Utilities.Constants.PROD_C);
         }
         return null;
+    }
+
+    // =========================================================================
+    // ExecuteBehaviour — pede à máquina para executar a skill fisicamente
+    // =========================================================================
+    private class ExecuteBehaviour extends SimpleBehaviour {
+        boolean finished = false;
+        int step = 0;
+
+        @Override
+        public void action() {
+            if (step == 0) {
+                ACLMessage req = new ACLMessage(ACLMessage.REQUEST);
+                req.addReceiver(chosenResourceAID);
+                req.setOntology(Constants.ONTOLOGY_EXECUTE_SKILL);
+                req.setContent(executionPlan.get(currentSkillIndex));
+                send(req);
+                step = 1;
+            } else if (step == 1) {
+                MessageTemplate mt = MessageTemplate.and(
+                        MessageTemplate.MatchPerformative(ACLMessage.INFORM),
+                        MessageTemplate.MatchSender(chosenResourceAID)
+                );
+                ACLMessage reply = receive(mt);
+                if (reply != null) {
+                    finished = true;
+                    currentSkillIndex++;
+                    startProduction(); // Passa à skill seguinte
+                } else {
+                    block();
+                }
+            }
+        }
+
+        @Override
+        public boolean done() { return finished; }
     }
 }
