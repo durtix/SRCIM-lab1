@@ -12,7 +12,7 @@ import Libraries.ITransport;
 import Utilities.Constants;
 
 import java.util.StringTokenizer;
-import java.util.LinkedList; // Para a fila de espera
+import java.util.LinkedList;
 
 public class TransportAgent extends Agent {
 
@@ -20,12 +20,10 @@ public class TransportAgent extends Agent {
     ITransport myLib;
     String description;
     private volatile boolean agvBusy = false;
-
-    // --- NOVAS VARIÁVEIS DE CONTROLO ---
-    private volatile int productsInGS = 0; // Contador de produtos na zona das Glue Stations
-    private LinkedList<ACLMessage> waitingQueue = new LinkedList<>(); // Fila para pedidos da Source
+    private volatile int productsInGS = 0;
+    private LinkedList<ACLMessage> waitingQueue = new LinkedList<>();
+    private LinkedList<ACLMessage> priorityQueue = new LinkedList<>();
     private final java.util.concurrent.ExecutorService moverExecutor = java.util.concurrent.Executors.newSingleThreadExecutor();
-    // -----------------------------------
 
     @Override
     protected void setup() {
@@ -67,13 +65,20 @@ public class TransportAgent extends Agent {
                 String origin = st.nextToken().trim();
                 String dest = st.nextToken().trim();
 
-                // LÓGICA DE FILTRAGEM:
-                // Se vem da Source e já temos 3 produtos nas máquinas, vai para a fila
-                if (agvBusy || (origin.equalsIgnoreCase("Source") && productsInGS >= 2)) {
+                boolean isSaida = dest.toLowerCase().contains("qualitycontrol") ||
+                        dest.toLowerCase().contains("sink");
+
+                if (isSaida) {
+                    if (agvBusy) {
+                        priorityQueue.add(msg);
+                        System.out.println("[" + id + "] Saída prioritária em espera (AGV ocupado): " + msg.getSender().getLocalName());
+                    } else {
+                        executeTransportProcess(msg, origin, dest);
+                    }
+                } else if (agvBusy || (origin.equalsIgnoreCase("Source") && productsInGS >= 2)) {
                     waitingQueue.add(msg);
-                    System.out.println("[" + id + "] AGV ou GS cheias (" + productsInGS + "). Pedido de " + msg.getSender().getLocalName() + " em espera.");
+                    System.out.println("[" + id + "] AGV ocupado ou GS cheias (" + productsInGS + "). Pedido de " + msg.getSender().getLocalName() + " em espera.");
                 } else {
-                    // Se for um movimento interno (ex: GS -> QS) ou se houver vaga, processa
                     executeTransportProcess(msg, origin, dest);
                 }
             } else {
@@ -82,39 +87,51 @@ public class TransportAgent extends Agent {
         }
     }
 
-    // Método auxiliar para processar o movimento e gerir o contador
     private void executeTransportProcess(ACLMessage msg, String origin, String dest) {
         String productID = msg.getSender().getLocalName();
         agvBusy = true;
-        // 1. Atualizar contador: se vai para GS, entra. Se sai de GS, liberta.
-        //if (dest.toLowerCase().contains("gluestation")) productsInGS++;
+
         if (origin.toLowerCase().contains("gluestation")) productsInGS--;
 
         System.out.println("[" + id + "] A mover " + productID + " de " + origin + " para " + dest + " (GS Ativas: " + productsInGS + ")");
 
-        // 2. Enviar AGREE
         ACLMessage agree = msg.createReply();
         agree.setPerformative(ACLMessage.AGREE);
         send(agree);
 
         Agent agentRef = this;
-        // 3. Execução física
+
         moverExecutor.submit(() -> {
             boolean success = myLib.executeMove(origin, dest, productID);
 
-            // Em vez de send() direto, agenda na thread JADE
             agentRef.addBehaviour(new jade.core.behaviours.OneShotBehaviour() {
                 @Override
                 public void action() {
-                    if (dest.toLowerCase().contains("gluestation")) productsInGS++;
+                    if (success && dest.toLowerCase().contains("gluestation")) productsInGS++;
+
+                    if (success && origin.toLowerCase().contains("gluestation")) {
+                        jade.core.AID gsAID = new jade.core.AID(origin, jade.core.AID.ISLOCALNAME);
+                        ACLMessage release = new ACLMessage(ACLMessage.INFORM);
+                        release.addReceiver(gsAID);
+                        release.setContent("RELEASE");
+                        send(release);
+                    }
+
                     ACLMessage reply = msg.createReply();
                     reply.setPerformative(success ? ACLMessage.INFORM : ACLMessage.FAILURE);
                     reply.setContent(dest);
                     send(reply);
 
                     agvBusy = false;
-                    // Verificar fila também aqui, na thread certa
-                    if (productsInGS < 2 && !waitingQueue.isEmpty()) {
+
+                    // Drena primeiro a fila de prioridade, depois a normal
+                    if (!priorityQueue.isEmpty()) {
+                        ACLMessage nextMsg = priorityQueue.poll();
+                        StringTokenizer st = new StringTokenizer(nextMsg.getContent(), Constants.TOKEN);
+                        if (st.countTokens() >= 2) {
+                            executeTransportProcess(nextMsg, st.nextToken().trim(), st.nextToken().trim());
+                        }
+                    } else if (!waitingQueue.isEmpty()) {
                         ACLMessage nextMsg = waitingQueue.poll();
                         StringTokenizer st = new StringTokenizer(nextMsg.getContent(), Constants.TOKEN);
                         if (st.countTokens() >= 2) {
